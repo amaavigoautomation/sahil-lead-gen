@@ -1,7 +1,12 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { getFirestore, Firestore, doc, getDocFromServer } from 'firebase/firestore';
 import { getAuth, Auth } from 'firebase/auth';
-import rawFirebaseConfig from '../../firebase-applet-config.json';
+
+// ALL Firebase settings come from environment variables. There is no config file and no built-in project:
+// whichever Firebase project the environment names is the one this deployment uses.
+//   Browser build:  VITE_FIREBASE_PROJECT_ID, VITE_FIREBASE_API_KEY, VITE_FIREBASE_AUTH_DOMAIN,
+//                   VITE_FIREBASE_APP_ID, VITE_FIRESTORE_DATABASE_ID (+ optional storage bucket / sender id)
+//   Server:         FIREBASE_SERVICE_ACCOUNT_JSON, FIRESTORE_DATABASE_ID (see src/server/firebaseAdmin.ts)
 
 // Safely detect environment variables in both Vite browser client and Node serverless functions
 const envProjectId =
@@ -39,39 +44,56 @@ const envDatabaseId =
   (typeof process !== 'undefined' && process.env?.VITE_FIRESTORE_DATABASE_ID) ||
   (typeof process !== 'undefined' && process.env?.FIRESTORE_DATABASE_ID);
 
-const resolvedProjectId: string = envProjectId || rawFirebaseConfig.projectId;
+// On the server the project can also be read from the service account key, so a script that only has
+// FIREBASE_SERVICE_ACCOUNT_JSON still knows which project it is working on. (Never available in the browser.)
+function projectIdFromServiceAccount(): string {
+  try {
+    const raw = typeof process !== 'undefined' ? process.env?.FIREBASE_SERVICE_ACCOUNT_JSON : '';
+    return raw ? String(JSON.parse(raw).project_id || '') : '';
+  } catch {
+    return '';
+  }
+}
 
-// True when the environment selects a project OTHER than the one in firebase-applet-config.json.
-// In that case the file's project-specific values (API key, auth domain, database name...) belong to a
-// different project and must never be borrowed: use the environment value or a safe default instead.
-const usingOtherProject = resolvedProjectId !== rawFirebaseConfig.projectId;
+const resolvedProjectId: string = envProjectId || projectIdFromServiceAccount() || '';
 
 export const firebaseConfig = {
-  ...rawFirebaseConfig,
   projectId: resolvedProjectId,
-  apiKey: envApiKey || (usingOtherProject ? '' : rawFirebaseConfig.apiKey),
-  authDomain: envAuthDomain || (usingOtherProject ? `${resolvedProjectId}.firebaseapp.com` : rawFirebaseConfig.authDomain),
-  storageBucket: envStorageBucket || (usingOtherProject ? `${resolvedProjectId}.firebasestorage.app` : rawFirebaseConfig.storageBucket),
-  messagingSenderId: envMessagingSenderId || (usingOtherProject ? '' : rawFirebaseConfig.messagingSenderId),
-  appId: envAppId || (usingOtherProject ? '' : rawFirebaseConfig.appId),
-  firestoreDatabaseId: envDatabaseId || (usingOtherProject ? '(default)' : rawFirebaseConfig.firestoreDatabaseId),
+  apiKey: (envApiKey || '') as string,
+  authDomain: (envAuthDomain || (resolvedProjectId ? `${resolvedProjectId}.firebaseapp.com` : '')) as string,
+  storageBucket: (envStorageBucket || (resolvedProjectId ? `${resolvedProjectId}.firebasestorage.app` : '')) as string,
+  messagingSenderId: (envMessagingSenderId || '') as string,
+  appId: (envAppId || '') as string,
+  firestoreDatabaseId: (envDatabaseId || '(default)') as string,
 };
 
-// Another project was selected but its web API key was not provided. The browser cannot sign anyone in
-// without it, so say exactly what is missing instead of failing later with a cryptic auth error.
+// Say exactly which setting is missing instead of failing later with a cryptic Firebase error.
+const projectIdMissing = !firebaseConfig.projectId;
 const webApiKeyMissing = !firebaseConfig.apiKey;
-if (webApiKeyMissing && typeof console !== 'undefined') {
-  console.error(
-    `[Firebase] VITE_FIREBASE_API_KEY is missing for project "${firebaseConfig.projectId}". ` +
-      'Set it (with the other VITE_FIREBASE_* values) in this environment and redeploy.'
-  );
+if (typeof console !== 'undefined') {
+  if (projectIdMissing) {
+    console.error(
+      '[Firebase] VITE_FIREBASE_PROJECT_ID is missing. Set the VITE_FIREBASE_* values for your Firebase project ' +
+        'in this environment and redeploy. Without them the app cannot reach any database.'
+    );
+  } else if (webApiKeyMissing && typeof window !== 'undefined') {
+    console.error(
+      `[Firebase] VITE_FIREBASE_API_KEY is missing for project "${firebaseConfig.projectId}". ` +
+        'Set it (with the other VITE_FIREBASE_* values) in this environment and redeploy.'
+    );
+  }
 }
 
 // Initialize Firebase App singleton for Firestore & Authentication.
-// (A placeholder key keeps start-up from crashing; the server does not use the web key at all.)
+// (Placeholders keep start-up from crashing when a setting is missing; the errors above explain what to fix.
+// The server does not use the web API key at all.)
 export const app =
   getApps().find((a) => a.name === '[DEFAULT]') ||
-  initializeApp(webApiKeyMissing ? { ...firebaseConfig, apiKey: 'missing-web-api-key' } : firebaseConfig);
+  initializeApp({
+    ...firebaseConfig,
+    projectId: firebaseConfig.projectId || 'missing-project-id',
+    apiKey: firebaseConfig.apiKey || 'missing-web-api-key',
+  });
 
 // Initialize Firestore with specific database ID
 export const db: Firestore = firebaseConfig.firestoreDatabaseId
@@ -97,5 +119,3 @@ async function testFirestoreConnection() {
   }
 }
 testFirestoreConnection();
-
-

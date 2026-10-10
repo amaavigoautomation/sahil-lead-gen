@@ -2,7 +2,6 @@ import { initializeApp, getApps, cert, applicationDefault, App } from 'firebase-
 import { getAuth, Auth, UserRecord } from 'firebase-admin/auth';
 import { getFirestore, Firestore } from 'firebase-admin/firestore';
 import { randomBytes } from 'node:crypto';
-import rawConfig from '../../firebase-applet-config.json';
 import type { AuthClaims, UserRole } from '../types/tenant.js';
 
 let initialized = false;
@@ -13,10 +12,9 @@ export function getFirebaseAdminApp(): App {
     return existingApps[0];
   }
 
-  const projectId =
-    process.env.FIREBASE_PROJECT_ID ||
-    process.env.VITE_FIREBASE_PROJECT_ID ||
-    rawConfig.projectId;
+  // The project comes from the environment only (there is no config file). With a service account key the
+  // key's own project is used; FIREBASE_PROJECT_ID / VITE_FIREBASE_PROJECT_ID say what the app was built for.
+  const projectId = (process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || '').trim() || undefined;
 
   const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 
@@ -25,7 +23,7 @@ export function getFirebaseAdminApp(): App {
       const parsed = JSON.parse(serviceAccountJson);
       // The browser build and the server key must point to the SAME Firebase project, otherwise every
       // login is rejected ("Invalid or expired session") with no obvious reason. Say so loudly.
-      if (parsed.project_id && parsed.project_id !== projectId) {
+      if (projectId && parsed.project_id && parsed.project_id !== projectId) {
         console.error(
           `[Firebase Admin] PROJECT MISMATCH: FIREBASE_SERVICE_ACCOUNT_JSON is for "${parsed.project_id}" but the app is configured for "${projectId}". ` +
             'Set VITE_FIREBASE_PROJECT_ID (and the other VITE_FIREBASE_* values) for the same project in this environment.'
@@ -38,6 +36,14 @@ export function getFirebaseAdminApp(): App {
     } catch (e) {
       console.warn('[Firebase Admin] Warning parsing FIREBASE_SERVICE_ACCOUNT_JSON:', e);
     }
+  }
+
+  // No usable key: the server cannot verify logins or reach the database. Say so once, clearly.
+  if (!serviceAccountJson) {
+    console.error(
+      '[Firebase Admin] FIREBASE_SERVICE_ACCOUNT_JSON is missing in this environment. ' +
+        'Add the service account key of your Firebase project and redeploy.'
+    );
   }
 
   try {
@@ -65,12 +71,8 @@ let firestoreConfigured = false;
 
 export function getAdminFirestore(): Firestore {
   const app = getFirebaseAdminApp();
-  // The database name in firebase-applet-config.json belongs to that file's project only. When the
-  // environment points this server at another project, default to that project's "(default)" database.
-  const activeProjectId = String((app.options as any)?.projectId || '');
-  const dbId =
-    (process.env.FIRESTORE_DATABASE_ID || '').trim() ||
-    (activeProjectId && activeProjectId !== rawConfig.projectId ? '(default)' : rawConfig.firestoreDatabaseId);
+  // Database name: FIRESTORE_DATABASE_ID, otherwise the project's "(default)" database.
+  const dbId = (process.env.FIRESTORE_DATABASE_ID || '').trim() || '(default)';
   let fs: Firestore;
   if (dbId && dbId !== '(default)') {
     try {

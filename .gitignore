@@ -5,7 +5,6 @@ coverage/
 .DS_Store
 *.log
 .env*
-!.env.example
 .mail_credentials.json
 .processed_gmail_messages.json
 
